@@ -120,6 +120,57 @@ def process_audio_emb(audio_emb):
     return audio_emb
 
 
+# Function to handle the setup of pixel values with motion frames
+def prepare_pixel_values(tensor_result, source_image_pixels, config):
+    if len(tensor_result) == 0:
+        # The first iteration
+        motion_zeros = source_image_pixels.repeat(config.data.n_motion_frames, 1, 1, 1)
+        motion_zeros = motion_zeros.to(dtype=source_image_pixels.dtype, device=source_image_pixels.device)
+        pixel_values_ref_img = torch.cat([source_image_pixels, motion_zeros], dim=0)
+    else:
+        motion_frames = tensor_result[-1][0].permute(1, 0, 2, 3)  # Combining permute and slicing
+        motion_frames = motion_frames[-config.data.n_motion_frames:]  # Only select last n_motion_frames
+        motion_frames = (motion_frames * 2.0 - 1.0).to(dtype=source_image_pixels.dtype, device=source_image_pixels.device)
+        pixel_values_ref_img = torch.cat([source_image_pixels, motion_frames], dim=0)
+
+    return pixel_values_ref_img.unsqueeze(0)
+
+
+# Main inference function
+def inference_step(t, clip_length, audio_emb, net, config, source_image_pixels, source_image_face_emb, 
+                   source_image_face_region, source_image_full_mask, source_image_face_mask, 
+                   source_image_lip_mask, img_size, pipeline, tensor_result, generator, motion_scale, times):
+
+    # Prepare the pixel values reference image
+    pixel_values_ref_img = prepare_pixel_values(tensor_result, source_image_pixels, config)
+
+    # Prepare the audio tensor
+    audio_tensor = audio_emb[t * clip_length: min((t + 1) * clip_length, audio_emb.shape[0])]
+    audio_tensor = audio_tensor.unsqueeze(0).to(device=net.audioproj.device, dtype=net.audioproj.dtype)
+    audio_tensor = net.audioproj(audio_tensor)
+
+    # Run the pipeline
+    pipeline_output = pipeline(
+        ref_image=pixel_values_ref_img,
+        audio_tensor=audio_tensor,
+        face_emb=source_image_face_emb,
+        face_mask=source_image_face_region,
+        pixel_values_full_mask=source_image_full_mask,
+        pixel_values_face_mask=source_image_face_mask,
+        pixel_values_lip_mask=source_image_lip_mask,
+        width=img_size[0],
+        height=img_size[1],
+        video_length=clip_length,
+        num_inference_steps=config.inference_steps,
+        guidance_scale=config.cfg_scale,
+        generator=generator,
+        motion_scale=motion_scale,
+    )
+
+    tensor_result.append(pipeline_output.videos)
+
+    print(f"inference {t + 1} / {times}")
+
 
 def inference_process(args: argparse.Namespace, setting_steps=40, setting_cfg=3.5, settings_seed=42, settings_fps=25, settings_motion_pose_scale=1.1, settings_motion_face_scale=1.1, settings_motion_lip_scale=1.1, settings_n_motion_frames=2, settings_n_sample_frames=16):
     """
@@ -330,67 +381,32 @@ def inference_process(args: argparse.Namespace, setting_steps=40, setting_cfg=3.
 
     for t in range(times):
 
+        # Using the profiler to profile the refactored inference step
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
             with record_function("model_inference"):
-
-                if len(tensor_result) == 0:
-                    # The first iteration
-                    motion_zeros = source_image_pixels.repeat(
-                        config.data.n_motion_frames, 1, 1, 1)
-                    motion_zeros = motion_zeros.to(
-                        dtype=source_image_pixels.dtype, device=source_image_pixels.device)
-                    pixel_values_ref_img = torch.cat(
-                        [source_image_pixels, motion_zeros], dim=0)  # concat the ref image and the first motion frames
-                else:
-                    motion_frames = tensor_result[-1][0]
-                    motion_frames = motion_frames.permute(1, 0, 2, 3)
-                    motion_frames = motion_frames[0-config.data.n_motion_frames:]
-                    motion_frames = motion_frames * 2.0 - 1.0
-                    motion_frames = motion_frames.to(
-                        dtype=source_image_pixels.dtype, device=source_image_pixels.device)
-                    pixel_values_ref_img = torch.cat(
-                        [source_image_pixels, motion_frames], dim=0)  # concat the ref image and the motion frames
-
-                pixel_values_ref_img = pixel_values_ref_img.unsqueeze(0)
-
-                audio_tensor = audio_emb[
-                    t * clip_length: min((t + 1) * clip_length, audio_emb.shape[0])
-                ]
-                audio_tensor = audio_tensor.unsqueeze(0)
-                audio_tensor = audio_tensor.to(
-                    device=net.audioproj.device, dtype=net.audioproj.dtype)
-                audio_tensor = net.audioproj(audio_tensor)
-                
-                # Get all params
-                print(
-                    f"""
-                    inference {t+1} / {times}
-                    """
-                )
-
-                pipeline_output = pipeline(
-                    ref_image=pixel_values_ref_img,
-                    audio_tensor=audio_tensor,
-                    face_emb=source_image_face_emb,
-                    face_mask=source_image_face_region,
-                    pixel_values_full_mask=source_image_full_mask,
-                    pixel_values_face_mask=source_image_face_mask,
-                    pixel_values_lip_mask=source_image_lip_mask,
-                    width=img_size[0],
-                    height=img_size[1],
-                    video_length=clip_length,
-                    num_inference_steps=config.inference_steps,
-                    guidance_scale=config.cfg_scale,
+                inference_step(
+                    t=t,
+                    clip_length=clip_length,
+                    audio_emb=audio_emb,
+                    net=net,
+                    config=config,
+                    source_image_pixels=source_image_pixels,
+                    source_image_face_emb=source_image_face_emb,
+                    source_image_face_region=source_image_face_region,
+                    source_image_full_mask=source_image_full_mask,
+                    source_image_face_mask=source_image_face_mask,
+                    source_image_lip_mask=source_image_lip_mask,
+                    img_size=img_size,
+                    pipeline=pipeline,
+                    tensor_result=tensor_result,
                     generator=generator,
                     motion_scale=motion_scale,
+                    times=times,
                 )
 
-                tensor_result.append(pipeline_output.videos)
 
         print("CPU time")
         print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
-        print("GPU time")
-        print(prof.key_averages().table(sort_by="gpu_time_total", row_limit=100))
         input("Press Enter to continue...")
 
 
