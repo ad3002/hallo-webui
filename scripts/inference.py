@@ -387,11 +387,11 @@ def inference_process(args: argparse.Namespace, setting_steps=40, setting_cfg=3.
 
                 tensor_result.append(pipeline_output.videos)
 
-            print("CPU time")
-            print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
-            print("GPU time")
-            print(prof.key_averages().table(sort_by="gpu_time_total", row_limit=100))
-            input("Press Enter to continue...")
+        print("CPU time")
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
+        print("GPU time")
+        print(prof.key_averages().table(sort_by="gpu_time_total", row_limit=100))
+        input("Press Enter to continue...")
 
 
     tensor_result = torch.cat(tensor_result, dim=2)
