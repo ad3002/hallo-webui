@@ -279,6 +279,8 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
         device = self._execution_device
 
+        print("Device in FaceAnimatePipeline: ", device)
+
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # Prepare timesteps
