@@ -454,7 +454,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     reference_control_writer.clear()
         print("CPU time")
         # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=20))
-        print(prof.key_averages(group_by_stack_n=5).table(sort_by="self_cuda_time_total", row_limit=10))
+        print(prof.key_averages(group_by_stack_n=10).table(sort_by="cpu_time_total", row_limit=20))
 
 
 
