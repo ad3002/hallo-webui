@@ -276,6 +276,12 @@ class FaceAnimatePipeline(DiffusionPipeline):
         device = self._execution_device
 
         print("Device in FaceAnimatePipeline: ", device)
+        print("Device in self.image_proj.device: ", self.image_proj.device)
+        print("Device in self.vae.device: ", self.vae.device)
+        print("Device in self.face_locator.device: ", self.face_locator.device)
+        print("Device in self.denoising_unet.device: ", self.denoising_unet.device) 
+        
+        
 
         do_classifier_free_guidance = guidance_scale > 1.0
 
