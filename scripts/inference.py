@@ -150,27 +150,27 @@ def inference_step(t, clip_length, audio_emb, net, config, source_image_pixels, 
     audio_tensor = net.audioproj(audio_tensor)
 
     # Run the pipeline
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-        with record_function("model_inference"):
-            pipeline_output = pipeline(
-                ref_image=pixel_values_ref_img,
-                audio_tensor=audio_tensor,
-                face_emb=source_image_face_emb,
-                face_mask=source_image_face_region,
-                pixel_values_full_mask=source_image_full_mask,
-                pixel_values_face_mask=source_image_face_mask,
-                pixel_values_lip_mask=source_image_lip_mask,
-                width=img_size[0],
-                height=img_size[1],
-                video_length=clip_length,
-                num_inference_steps=config.inference_steps,
-                guidance_scale=config.cfg_scale,
-                generator=generator,
-                motion_scale=motion_scale,
-            )
-    print("CPU time")
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
-    input("Press Enter to continue...")
+    # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+    #     with record_function("model_inference"):
+    pipeline_output = pipeline(
+        ref_image=pixel_values_ref_img,
+        audio_tensor=audio_tensor,
+        face_emb=source_image_face_emb,
+        face_mask=source_image_face_region,
+        pixel_values_full_mask=source_image_full_mask,
+        pixel_values_face_mask=source_image_face_mask,
+        pixel_values_lip_mask=source_image_lip_mask,
+        width=img_size[0],
+        height=img_size[1],
+        video_length=clip_length,
+        num_inference_steps=config.inference_steps,
+        guidance_scale=config.cfg_scale,
+        generator=generator,
+        motion_scale=motion_scale,
+    )
+    # print("CPU time")
+    # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
+    # input("Press Enter to continue...")
 
     tensor_result.append(pipeline_output.videos)
 
