@@ -36,6 +36,9 @@ import torch
 from diffusers import AutoencoderKL, DDIMScheduler
 from omegaconf import OmegaConf
 from torch import nn
+import torch
+from torch.profiler import profile, record_function, ProfilerActivity
+
 
 from hallo.animate.face_animate import FaceAnimatePipeline
 from hallo.datasets.audio_processor import AudioProcessor
@@ -46,6 +49,7 @@ from hallo.models.image_proj import ImageProjModel
 from hallo.models.unet_2d_condition import UNet2DConditionModel
 from hallo.models.unet_3d import UNet3DConditionModel
 from hallo.utils.util import tensor_to_video
+
 
 # from diffusers.utils.import_utils import is_xformers_available
 
@@ -421,15 +425,24 @@ if __name__ == "__main__":
 
     command_line_args = parser.parse_args()
 
-    inference_process(
-        command_line_args,
-        command_line_args.setting_steps,
-        command_line_args.setting_cfg,
-        command_line_args.settings_seed,
-        command_line_args.settings_fps,
-        command_line_args.settings_motion_pose_scale,
-        command_line_args.settings_motion_face_scale,
-        command_line_args.settings_motion_lip_scale,
-        command_line_args.settings_n_motion_frames,
-        command_line_args.settings_n_sample_frames
-    )
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+        with record_function("model_inference"):
+            inference_process(
+                command_line_args,
+                command_line_args.setting_steps,
+                command_line_args.setting_cfg,
+                command_line_args.settings_seed,
+                command_line_args.settings_fps,
+                command_line_args.settings_motion_pose_scale,
+                command_line_args.settings_motion_face_scale,
+                command_line_args.settings_motion_lip_scale,
+                command_line_args.settings_n_motion_frames,
+                command_line_args.settings_n_sample_frames
+            )
+
+    print("CPU time")
+    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=200))
+    print("GPU time")
+    print(prof.key_averages().table(sort_by="gpu_time_total", row_limit=200))
+
+
