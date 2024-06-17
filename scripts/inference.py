@@ -326,8 +326,8 @@ def inference_process(args: argparse.Namespace, setting_steps=40, setting_cfg=3.
     #     reference_unet.enable_xformers_memory_efficient_attention()
     #     denoising_unet.enable_xformers_memory_efficient_attention()
 
-    reference_unet.enable_gradient_checkpointing()
-    denoising_unet.enable_gradient_checkpointing()
+    # reference_unet.enable_gradient_checkpointing()
+    # denoising_unet.enable_gradient_checkpointing()
     
     net = Net(
         reference_unet,
