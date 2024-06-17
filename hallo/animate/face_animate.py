@@ -395,7 +395,11 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
         print("Starting denoising loop")
         # Run the pipeline
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+        # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+        with profile(
+                    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                    with_stack=True,
+                ) as prof:
             with record_function("denoising_loop"):
                 with self.progress_bar(total=num_inference_steps) as progress_bar:
                     for i, t in enumerate(timesteps):
@@ -449,7 +453,9 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     reference_control_reader.clear()
                     reference_control_writer.clear()
         print("CPU time")
-        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=20))
+        # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=20))
+        print(prof.key_averages(group_by_stack_n=5).table(sort_by="self_cuda_time_total", row_limit=10))
+
 
 
         # Post-processing
