@@ -281,8 +281,6 @@ class FaceAnimatePipeline(DiffusionPipeline):
         print("Device in self.face_locator.device: ", self.face_locator.device)
         print("Device in self.denoising_unet.device: ", self.denoising_unet.device) 
         
-        
-
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # Prepare timesteps

@@ -124,7 +124,7 @@ class ReferenceAttentionControl:
         _dtype=torch.float16,
         batch_size=1,
         num_images_per_prompt=1,
-        device=torch.device("cpu"),
+        device=torch.device("cuda:0"),
         _fusion_blocks="midup",
     ):
         """

@@ -1406,7 +1406,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 f"loading safeTensors weights from {pretrained_model_path} ..."
             )
             state_dict = load_file(
-                pretrained_model_path.joinpath(SAFETENSORS_WEIGHTS_NAME), device="cpu"
+                pretrained_model_path.joinpath(SAFETENSORS_WEIGHTS_NAME), device="cuda:0"
             )
 
         elif pretrained_model_path.joinpath(WEIGHTS_NAME).exists():
