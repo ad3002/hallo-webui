@@ -379,29 +379,40 @@ class FaceAnimatePipeline(DiffusionPipeline):
         audio_tensor = torch.cat([uncond_audio_tensor, audio_tensor], dim=0)
         audio_tensor = audio_tensor.to(dtype=self.denoising_unet.dtype, device=self.denoising_unet.device)
 
+        # Preload data to GPU
+        print("Loading data to GPU")
+        ref_image_latents = ref_image_latents.to(device)
+        face_mask = face_mask.to(device)
+        pixel_values_full_mask = [mask.to(device) for mask in pixel_values_full_mask]
+        pixel_values_face_mask = [mask.to(device) for mask in pixel_values_face_mask]
+        pixel_values_lip_mask = [mask.to(device) for mask in pixel_values_lip_mask]
+        audio_tensor = audio_tensor.to(device)
+
         # denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+
+        print("Starting denoising loop")
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # Forward reference image
                 if i == 0:
                     self.reference_unet(
-                        ref_image_latents.repeat(
-                            (2 if do_classifier_free_guidance else 1), 1, 1, 1
-                        ),
-                        torch.zeros_like(t),
+                        ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
+                        torch.zeros_like(t).to(device),
                         encoder_hidden_states=encoder_hidden_states,
                         return_dict=False,
                     )
                     reference_control_reader.update(reference_control_writer)
 
-                # expand the latents if we are doing classifier free guidance
+                # Expand the latents for classifier-free guidance
                 if do_classifier_free_guidance:
                     latent_model_input = torch.cat([latents, latents], dim=0)
                 else:
                     latent_model_input = latents
+
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                # Perform the forward pass of the denoising model
                 noise_pred = self.denoising_unet(
                     latent_model_input,
                     t,
@@ -415,15 +426,15 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     return_dict=False,
                 )[0]
 
-                # perform guidance
+                # Perform guidance if applicable
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                # compute the previous noisy sample x_t -> x_t-1
+                # Compute the previous noisy sample x_t -> x_t-1 in-place
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
-                # call the callback, if provided
+                # Update progress and call callback if needed
                 if i == len(timesteps) - 1 or (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0:
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
@@ -432,6 +443,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
             reference_control_reader.clear()
             reference_control_writer.clear()
+
 
         # Post-processing
         images = self.decode_latents(latents)  # (b, c, f, h, w)
