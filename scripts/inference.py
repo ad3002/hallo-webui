@@ -330,59 +330,69 @@ def inference_process(args: argparse.Namespace, setting_steps=40, setting_cfg=3.
 
     for t in range(times):
 
-        if len(tensor_result) == 0:
-            # The first iteration
-            motion_zeros = source_image_pixels.repeat(
-                config.data.n_motion_frames, 1, 1, 1)
-            motion_zeros = motion_zeros.to(
-                dtype=source_image_pixels.dtype, device=source_image_pixels.device)
-            pixel_values_ref_img = torch.cat(
-                [source_image_pixels, motion_zeros], dim=0)  # concat the ref image and the first motion frames
-        else:
-            motion_frames = tensor_result[-1][0]
-            motion_frames = motion_frames.permute(1, 0, 2, 3)
-            motion_frames = motion_frames[0-config.data.n_motion_frames:]
-            motion_frames = motion_frames * 2.0 - 1.0
-            motion_frames = motion_frames.to(
-                dtype=source_image_pixels.dtype, device=source_image_pixels.device)
-            pixel_values_ref_img = torch.cat(
-                [source_image_pixels, motion_frames], dim=0)  # concat the ref image and the motion frames
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+            with record_function("model_inference"):
 
-        pixel_values_ref_img = pixel_values_ref_img.unsqueeze(0)
+                if len(tensor_result) == 0:
+                    # The first iteration
+                    motion_zeros = source_image_pixels.repeat(
+                        config.data.n_motion_frames, 1, 1, 1)
+                    motion_zeros = motion_zeros.to(
+                        dtype=source_image_pixels.dtype, device=source_image_pixels.device)
+                    pixel_values_ref_img = torch.cat(
+                        [source_image_pixels, motion_zeros], dim=0)  # concat the ref image and the first motion frames
+                else:
+                    motion_frames = tensor_result[-1][0]
+                    motion_frames = motion_frames.permute(1, 0, 2, 3)
+                    motion_frames = motion_frames[0-config.data.n_motion_frames:]
+                    motion_frames = motion_frames * 2.0 - 1.0
+                    motion_frames = motion_frames.to(
+                        dtype=source_image_pixels.dtype, device=source_image_pixels.device)
+                    pixel_values_ref_img = torch.cat(
+                        [source_image_pixels, motion_frames], dim=0)  # concat the ref image and the motion frames
 
-        audio_tensor = audio_emb[
-            t * clip_length: min((t + 1) * clip_length, audio_emb.shape[0])
-        ]
-        audio_tensor = audio_tensor.unsqueeze(0)
-        audio_tensor = audio_tensor.to(
-            device=net.audioproj.device, dtype=net.audioproj.dtype)
-        audio_tensor = net.audioproj(audio_tensor)
-        
-        # Get all params
-        print(
-            f"""
-            inference {t+1} / {times}
-            """
-        )
+                pixel_values_ref_img = pixel_values_ref_img.unsqueeze(0)
 
-        pipeline_output = pipeline(
-            ref_image=pixel_values_ref_img,
-            audio_tensor=audio_tensor,
-            face_emb=source_image_face_emb,
-            face_mask=source_image_face_region,
-            pixel_values_full_mask=source_image_full_mask,
-            pixel_values_face_mask=source_image_face_mask,
-            pixel_values_lip_mask=source_image_lip_mask,
-            width=img_size[0],
-            height=img_size[1],
-            video_length=clip_length,
-            num_inference_steps=config.inference_steps,
-            guidance_scale=config.cfg_scale,
-            generator=generator,
-            motion_scale=motion_scale,
-        )
+                audio_tensor = audio_emb[
+                    t * clip_length: min((t + 1) * clip_length, audio_emb.shape[0])
+                ]
+                audio_tensor = audio_tensor.unsqueeze(0)
+                audio_tensor = audio_tensor.to(
+                    device=net.audioproj.device, dtype=net.audioproj.dtype)
+                audio_tensor = net.audioproj(audio_tensor)
+                
+                # Get all params
+                print(
+                    f"""
+                    inference {t+1} / {times}
+                    """
+                )
 
-        tensor_result.append(pipeline_output.videos)
+                pipeline_output = pipeline(
+                    ref_image=pixel_values_ref_img,
+                    audio_tensor=audio_tensor,
+                    face_emb=source_image_face_emb,
+                    face_mask=source_image_face_region,
+                    pixel_values_full_mask=source_image_full_mask,
+                    pixel_values_face_mask=source_image_face_mask,
+                    pixel_values_lip_mask=source_image_lip_mask,
+                    width=img_size[0],
+                    height=img_size[1],
+                    video_length=clip_length,
+                    num_inference_steps=config.inference_steps,
+                    guidance_scale=config.cfg_scale,
+                    generator=generator,
+                    motion_scale=motion_scale,
+                )
+
+                tensor_result.append(pipeline_output.videos)
+
+            print("CPU time")
+            print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
+            print("GPU time")
+            print(prof.key_averages().table(sort_by="gpu_time_total", row_limit=100))
+            input("Press Enter to continue...")
+
 
     tensor_result = torch.cat(tensor_result, dim=2)
     tensor_result = tensor_result.squeeze(0)
@@ -425,24 +435,19 @@ if __name__ == "__main__":
 
     command_line_args = parser.parse_args()
 
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-        with record_function("model_inference"):
-            inference_process(
-                command_line_args,
-                command_line_args.setting_steps,
-                command_line_args.setting_cfg,
-                command_line_args.settings_seed,
-                command_line_args.settings_fps,
-                command_line_args.settings_motion_pose_scale,
-                command_line_args.settings_motion_face_scale,
-                command_line_args.settings_motion_lip_scale,
-                command_line_args.settings_n_motion_frames,
-                command_line_args.settings_n_sample_frames
-            )
 
-    print("CPU time")
-    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=200))
-    print("GPU time")
-    print(prof.key_averages().table(sort_by="gpu_time_total", row_limit=200))
+    inference_process(
+        command_line_args,
+        command_line_args.setting_steps,
+        command_line_args.setting_cfg,
+        command_line_args.settings_seed,
+        command_line_args.settings_fps,
+        command_line_args.settings_motion_pose_scale,
+        command_line_args.settings_motion_face_scale,
+        command_line_args.settings_motion_lip_scale,
+        command_line_args.settings_n_motion_frames,
+        command_line_args.settings_n_sample_frames
+    )
+
 
 
