@@ -298,7 +298,6 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
         if do_classifier_free_guidance:
             encoder_hidden_states = torch.cat([uncond_encoder_hidden_states, encoder_hidden_states], dim=0)
-        
 
         reference_control_writer = ReferenceAttentionControl(
             self.reference_unet,
@@ -382,51 +381,47 @@ class FaceAnimatePipeline(DiffusionPipeline):
         audio_tensor = audio_tensor.to(dtype=self.denoising_unet.dtype, device=self.denoising_unet.device)
 
         # Preload data to GPU
-        print("Loading data to GPU")
+        print("Loading data to GPU: ", device)
         ref_image_latents = ref_image_latents.to(device)
         face_mask = face_mask.to(device)
-        pixel_values_full_mask = torch.stack(pixel_values_full_mask).to(device)  # Combine mask transfer
-        pixel_values_face_mask = torch.stack(pixel_values_face_mask).to(device)  # Combine mask transfer
-        pixel_values_lip_mask = torch.stack(pixel_values_lip_mask).to(device)  # Combine mask transfer
+        pixel_values_full_mask = [mask.to(device) for mask in pixel_values_full_mask]
+        pixel_values_face_mask = [mask.to(device) for mask in pixel_values_face_mask]
+        pixel_values_lip_mask = [mask.to(device) for mask in pixel_values_lip_mask]
         audio_tensor = audio_tensor.to(device)
-
-        # Ensure that encoder_hidden_states are precomputed and reused
-        encoder_hidden_states = encoder_hidden_states.to(device)  # Transfer once outside the loop if not changing
 
         # denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
 
 
-        # Start of the denoising loop
         print("Starting denoising loop")
+        # Run the pipeline
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
             with record_function("denoising_loop"):
                 with self.progress_bar(total=num_inference_steps) as progress_bar:
                     for i, t in enumerate(timesteps):
-                        # Avoid repeating tensor transfers and computations
+                        # Forward reference image
                         if i == 0:
-                            ref_image_latents_expanded = ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1)
-                            zero_tensor = torch.zeros_like(t).to(device)  # Precompute zero tensor once
-
                             self.reference_unet(
-                                ref_image_latents_expanded,
-                                zero_tensor,
-                                encoder_hidden_states=encoder_hidden_states,  # Use precomputed tensor
+                                ref_image_latents.repeat((2 if do_classifier_free_guidance else 1), 1, 1, 1),
+                                torch.zeros_like(t).to(device),
+                                encoder_hidden_states=encoder_hidden_states,
                                 return_dict=False,
                             )
                             reference_control_reader.update(reference_control_writer)
 
-                        # Prepare latent_model_input efficiently
-                        latent_model_input = torch.cat([latents, latents], dim=0) if do_classifier_free_guidance else latents
+                        # Expand the latents for classifier-free guidance
+                        if do_classifier_free_guidance:
+                            latent_model_input = torch.cat([latents, latents], dim=0)
+                        else:
+                            latent_model_input = latents
 
-                        # Scale model input
                         latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                        # Forward pass of the denoising model
+                        # Perform the forward pass of the denoising model
                         noise_pred = self.denoising_unet(
                             latent_model_input,
                             t,
-                            encoder_hidden_states=encoder_hidden_states,  # Reuse precomputed tensor
+                            encoder_hidden_states=encoder_hidden_states,
                             mask_cond_fea=face_mask,
                             full_mask=pixel_values_full_mask,
                             face_mask=pixel_values_face_mask,
@@ -436,7 +431,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
                             return_dict=False,
                         )[0]
 
-                        # Classifier-free guidance
+                        # Perform guidance if applicable
                         if do_classifier_free_guidance:
                             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
@@ -455,7 +450,6 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     reference_control_writer.clear()
         print("CPU time")
         print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=20))
-
 
 
         # Post-processing
