@@ -104,6 +104,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
         ],
     ) -> None:
         super().__init__()
+
         self.register_modules(
             vae=vae,
             reference_unet=reference_unet,
@@ -112,7 +113,9 @@ class FaceAnimatePipeline(DiffusionPipeline):
             scheduler=scheduler,
             image_proj=image_proj,
         )
+
         self.vae_scale_factor: int = 2 ** (len(self.vae.config.block_out_channels) - 1)
+
         self.ref_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True,
         )
@@ -132,15 +135,15 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
     def prepare_latents(
         self,
-        batch_size: int,
-        num_channels_latents: int,
-        width: int,
-        height: int,
-        video_length: int,
-        dtype: torch.dtype,
-        device: torch.device,
-        generator: Optional[torch.Generator] = None,
-        latents: Optional[torch.Tensor] = None
+        batch_size: int,                      # Number of videos to generate in parallel
+        num_channels_latents: int,           # Number of channels in the latents
+        width: int,                           # Width of the video frame
+        height: int,                         # Height of the video frame
+        video_length: int,                   # Length of the video in frames
+        dtype: torch.dtype,                 # Data type of the latents
+        device: torch.device,               # Device to store the latents on
+        generator: Optional[torch.Generator] = None,  # Random number generator for reproducibility
+        latents: Optional[torch.Tensor] = None  # Pre-generated latents (optional)
     ):
         """
         Prepares the initial latents for video generation.
@@ -167,6 +170,12 @@ class FaceAnimatePipeline(DiffusionPipeline):
             height // self.vae_scale_factor,
             width // self.vae_scale_factor,
         )
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+
         if latents is None:
             latents = randn_tensor(
                 shape, generator=generator, device=device, dtype=dtype
@@ -174,7 +183,8 @@ class FaceAnimatePipeline(DiffusionPipeline):
         else:
             latents = latents.to(device)
 
-        latents = latents * self.scheduler.init_noise_sigma
+        # scale the initial noise by the standard deviation required by the scheduler
+        latents.mul_(self.scheduler.init_noise_sigma)
         return latents
 
     def prepare_extra_step_kwargs(self, generator, eta):
@@ -201,6 +211,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
 
+        # check if the scheduler accepts generator
         accepts_generator = "generator" in set(
             inspect.signature(self.scheduler.step).parameters.keys()
         )
@@ -222,13 +233,14 @@ class FaceAnimatePipeline(DiffusionPipeline):
         video_length = latents.shape[2]
         latents = 1 / 0.18215 * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
-        
-        # Decode all frames in a batch to minimize loop overhead
+        # video = self.vae.decode(latents).sample
         decoded = self.vae.decode(latents).sample
         video = rearrange(decoded, "(b f) c h w -> b c f h w", f=video_length)
-        video = (video / 2 + 0.5).clamp(0, 1)
-        video = video.cpu().float().numpy()
+        # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
+        video = (video / 2 + 0.5).clamp(0, 1).cpu().float().numpy()
+
         return video
+
 
     @torch.no_grad()
     def __call__(
@@ -257,18 +269,25 @@ class FaceAnimatePipeline(DiffusionPipeline):
         callback_steps: Optional[int] = 1,
         **kwargs,
     ):
+        # Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
+
         device = self._execution_device
 
         print("Device in FaceAnimatePipeline: ", device)
 
         do_classifier_free_guidance = guidance_scale > 1.0
+
+        # Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
+
         batch_size = 1
 
+        # prepare clip image embeddings
         clip_image_embeds = face_emb.to(self.image_proj.device, self.image_proj.dtype)
+
         encoder_hidden_states = self.image_proj(clip_image_embeds)
         uncond_encoder_hidden_states = self.image_proj(torch.zeros_like(clip_image_embeds))
 
@@ -303,29 +322,64 @@ class FaceAnimatePipeline(DiffusionPipeline):
             generator,
         )
 
+        # Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+        # Prepare ref image latents
         ref_image_tensor = rearrange(ref_image, "b f c h w -> (b f) c h w")
-        ref_image_tensor = self.ref_image_processor.preprocess(ref_image_tensor, height=height, width=width)
-        ref_image_tensor = ref_image_tensor.to(dtype=self.vae.dtype, device=self.vae.device)
-        ref_image_latents = self.vae.encode(ref_image_tensor).latent_dist.mean * 0.18215
+        ref_image_tensor = self.ref_image_processor.preprocess(ref_image_tensor, height=height, width=width).to(dtype=self.vae.dtype, device=self.vae.device)
 
-        face_mask = face_mask.unsqueeze(1).to(dtype=self.face_locator.dtype, device=self.face_locator.device)
-        face_mask = repeat(face_mask, "b f c h w -> b (repeat f) c h w", repeat=video_length).transpose(1, 2)
+        ref_image_latents = self.vae.encode(ref_image_tensor).latent_dist.mean
+        ref_image_latents = ref_image_latents * 0.18215  # (b, 4, h, w)
+
+
+        face_mask = face_mask.unsqueeze(1).to(dtype=self.face_locator.dtype, device=self.face_locator.device) # (bs, f, c, H, W)
+        
+        face_mask = repeat(face_mask, "b f c h w -> b (repeat f) c h w", repeat=video_length)
+        face_mask = face_mask.transpose(1, 2)  # (bs, c, f, H, W)
         face_mask = self.face_locator(face_mask)
-        if do_classifier_free_guidance:
-            face_mask = torch.cat([torch.zeros_like(face_mask), face_mask], dim=0)
+        face_mask = torch.cat([torch.zeros_like(face_mask), face_mask], dim=0) if do_classifier_free_guidance else face_mask
 
-        pixel_values_full_mask = [mask.to(device=self.denoising_unet.device, dtype=self.denoising_unet.dtype) for mask in pixel_values_full_mask]
+        pixel_values_full_mask = (
+            [torch.cat([mask] * 2) for mask in pixel_values_full_mask]
+            if do_classifier_free_guidance
+            else pixel_values_full_mask
+        )
+        pixel_values_face_mask = (
+            [torch.cat([mask] * 2) for mask in pixel_values_face_mask]
+            if do_classifier_free_guidance
+            else pixel_values_face_mask
+        )
+        pixel_values_lip_mask = (
+            [torch.cat([mask] * 2) for mask in pixel_values_lip_mask]
+            if do_classifier_free_guidance
+            else pixel_values_lip_mask
+        )
+        
         pixel_values_face_mask = [mask.to(device=self.denoising_unet.device, dtype=self.denoising_unet.dtype) for mask in pixel_values_face_mask]
-        pixel_values_lip_mask = [mask.to(device=self.denoising_unet.device, dtype=self.denoising_unet.dtype) for mask in pixel_values_lip_mask]
+
+
+        pixel_values_lip_mask_ = []
+        for mask in pixel_values_lip_mask:
+            pixel_values_lip_mask_.append(
+                mask.to(device=self.denoising_unet.device, dtype=self.denoising_unet.dtype))
+        pixel_values_lip_mask = pixel_values_lip_mask_
+        pixel_values_full_mask_ = []
+        for mask in pixel_values_full_mask:
+            pixel_values_full_mask_.append(
+                mask.to(device=self.denoising_unet.device, dtype=self.denoising_unet.dtype))
+        pixel_values_full_mask = pixel_values_full_mask_
+
 
         uncond_audio_tensor = torch.zeros_like(audio_tensor)
-        audio_tensor = torch.cat([uncond_audio_tensor, audio_tensor], dim=0).to(dtype=self.denoising_unet.dtype, device=self.denoising_unet.device)
+        audio_tensor = torch.cat([uncond_audio_tensor, audio_tensor], dim=0)
+        audio_tensor = audio_tensor.to(dtype=self.denoising_unet.dtype, device=self.denoising_unet.device)
 
+        # denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                # Forward reference image
                 if i == 0:
                     self.reference_unet(
                         ref_image_latents.repeat(
@@ -337,7 +391,11 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     )
                     reference_control_reader.update(reference_control_writer)
 
-                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                # expand the latents if we are doing classifier free guidance
+                if do_classifier_free_guidance:
+                    latent_model_input = torch.cat([latents, latents], dim=0)
+                else:
+                    latent_model_input = latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                 noise_pred = self.denoising_unet(
@@ -353,12 +411,15 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     return_dict=False,
                 )[0]
 
+                # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+                # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
+                # call the callback, if provided
                 if i == len(timesteps) - 1 or (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0:
                     progress_bar.update()
                     if callback is not None and i % callback_steps == 0:
@@ -368,8 +429,10 @@ class FaceAnimatePipeline(DiffusionPipeline):
             reference_control_reader.clear()
             reference_control_writer.clear()
 
-        images = self.decode_latents(latents)
+        # Post-processing
+        images = self.decode_latents(latents)  # (b, c, f, h, w)
 
+        # Convert to tensor
         if output_type == "tensor":
             images = torch.from_numpy(images)
 
